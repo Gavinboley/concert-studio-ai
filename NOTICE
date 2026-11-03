@@ -1,0 +1,13 @@
+ConcertStudio AI
+Copyright (c) 2026 Gavin Boley - https://github.com/Gavinboley
+
+Licensed under the ConcertStudio AI Non-Commercial Attribution License 1.0 (see LICENSE).
+Commercial use requires written permission from the author.
+
+Required credit for anything made with this software:
+
+    Made with ConcertStudio AI by Gavin Boley - https://github.com/Gavinboley
+
+Third-party software and models used at runtime (FFmpeg, PyTorch, audio-separator and its
+RoFormer checkpoints, librosa, Audiobox Aesthetics, iZotope Ozone) are not included here and
+remain under their own licenses.

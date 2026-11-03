@@ -1,0 +1,101 @@
+ConcertStudio AI Non-Commercial Attribution License, Version 1.0
+
+Copyright (c) 2026 Gavin Boley (https://github.com/Gavinboley). All rights reserved
+except as expressly granted below.
+
+1. Definitions
+
+   "Software" means the source code, documentation, models configuration, assets and
+   other files in this repository, and any part of them.
+
+   "Licensor" means Gavin Boley.
+
+   "You" means the individual or legal entity exercising rights under this License.
+
+   "Derivative Work" means any work that is based on, modified from, translated from,
+   or incorporates any part of the Software, including forks and ports.
+
+   "Output" means any audio, video, image, data or other material produced in whole or
+   in part with the Software (for example a remastered recording or a multi-camera
+   video cut).
+
+   "Commercial Use" means any use intended for or directed toward commercial advantage
+   or monetary compensation, including without limitation: selling, renting, licensing
+   or sublicensing the Software, a Derivative Work or access to either; offering the
+   Software or a Derivative Work as a paid, ad-supported or otherwise monetized product
+   or hosted service; incorporating any part of the Software into a commercial product
+   or service; using the Software to perform paid work for others; and distributing
+   Output for which You receive payment, revenue share or advertising income.
+
+   "Non-Commercial Use" means any use that is not Commercial Use, such as personal use,
+   study, research, teaching, hobby projects and unpaid community work.
+
+2. Grant of rights
+
+   Subject to the conditions of this License, the Licensor grants You a worldwide,
+   royalty-free, non-exclusive, non-transferable license to use, copy, modify and
+   distribute the Software and Derivative Works, and to use and share Output, solely
+   for Non-Commercial Use.
+
+3. No Commercial Use
+
+   You may not make any Commercial Use of the Software, of a Derivative Work, or of
+   Output without a separate written license from the Licensor. To ask for one, contact
+   the Licensor through https://github.com/Gavinboley.
+
+4. Attribution (required in every use)
+
+   (a) Copies and Derivative Works. Every copy of the Software and every Derivative
+       Work, in source or any other form, must include this License unmodified, the
+       NOTICE file, and all copyright notices. A Derivative Work must state prominently
+       that it was changed and that it is based on ConcertStudio AI by Gavin Boley.
+
+   (b) Projects and Output. Any project, publication, performance, recording, video,
+       website, application, research paper or other work that uses the Software, a
+       Derivative Work, or Output must give visible credit in a place where credits
+       for that kind of work are normally found (for example a video description,
+       liner notes, an about page, a README or a paper's acknowledgements), in this
+       form or an equivalent one:
+
+           Made with ConcertStudio AI by Gavin Boley - https://github.com/Gavinboley
+
+   (c) Credit must not suggest that the Licensor endorses You or Your work.
+
+5. Third-party components
+
+   The Software calls third-party programs, libraries and machine-learning models (for
+   example FFmpeg, PyTorch, audio-separator and its model checkpoints, Audiobox
+   Aesthetics, and the commercial iZotope Ozone plugin). They are not part of the
+   Software, are not licensed under this License, and remain under their own licenses,
+   which You must follow separately. Some model checkpoints carry their own
+   non-commercial terms.
+
+6. Source recordings
+
+   This License grants no rights in the recordings, footage or music You process with
+   the Software. You are responsible for having the rights needed to use, process and
+   publish them.
+
+7. Termination
+
+   Your rights under this License end automatically if You break any of its terms. If
+   You fix the breach within 30 days after first learning of it, and it is the first
+   time, Your rights are reinstated. Otherwise You must stop all use and distribution
+   of the Software, Derivative Works and Output covered by this License.
+
+8. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+9. Limitation of liability
+
+   IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE SOFTWARE.
+
+10. Everything else
+
+   Any right not expressly granted here is reserved by the Licensor. If any provision
+   of this License is held unenforceable, the remaining provisions stay in effect.

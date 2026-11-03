@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "concert-studio-ai"
+version = "0.8.0"
+description = "Turn many phone recordings of one live song into a studio-grade live album and a synced multi-camera video"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Gavin Boley" }]
+requires-python = ">=3.10"
+keywords = ["audio", "music", "concert", "multi-camera", "source-separation", "remaster", "alignment"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Other/Proprietary License",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "soundfile>=0.12",
+    "pyloudnorm>=0.1.1",
+    "librosa>=0.10",
+]
+
+[project.optional-dependencies]
+# neural stems, crowd removal, de-reverb (RoFormer models via audio-separator; a CUDA GPU is strongly advised)
+ml = ["audio-separator>=0.30", "torch>=2.2"]
+# perceptual take scoring (Audiobox Aesthetics)
+quality = ["audiobox_aesthetics>=0.0.4", "torchaudio>=2.2"]
+# optional iZotope Ozone 12 mastering chain (Windows; Ozone itself is commercial and not included)
+ozone = ["pedalboard>=0.9"]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/Gavinboley/concert-studio-ai"
+
+[project.scripts]
+concert-studio = "concert_studio.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["concert_studio*"]
+
+[tool.setuptools.package-data]
+concert_studio = ["static/*.html"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
