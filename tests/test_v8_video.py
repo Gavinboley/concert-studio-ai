@@ -76,3 +76,52 @@ def test_single_camera_plan_is_one_continuous_shot():
     r["cams"] = {"b": r["cams"]["b"]}
     shots = V.plan_shots(r, seed=0)
     assert len(shots) == 1 and shots[0]["start_sec"] == 0.0 and shots[0]["end_sec"] == 120.0
+
+
+def test_reframe_geometry_fills_9x16_within_zoom_cap():
+    v = _cam("v", [[0, 10]], 10.0)
+    assert V._reframe_geometry(v) is None                                   # already vertical
+    assert V._fill_and_scale(v) == pytest.approx((1.0, 1.0))
+    w, h, s = V._reframe_geometry(_cam("l", [[0, 10]], 10.0, w=1920, h=1080))
+    assert (w, h) == (608, 1080) and s == pytest.approx(1920 / 1080)       # full height, 9:16 window
+    w, h, s = V._reframe_geometry(_cam("m", [[0, 10]], 10.0, w=1280, h=720), max_zoom=2.5)
+    assert (w, h, s) == (432, 720, 2.5)                                     # zoom capped: small blur margin
+    assert V._fill_and_scale(_cam("m", [[0, 10]], 10.0, w=1280, h=720), 2.5)[0] == pytest.approx(0.9375)
+    boxed = _cam("b", [[0, 10]], 10.0, w=720, h=1280)
+    boxed["crop"] = [720, 404, 0, 438]                                      # landscape posted inside black bars
+    w, h, s = V._reframe_geometry(boxed, max_zoom=2.5)
+    assert h == 404 and w == 432
+    fit = V._fill_and_scale(_cam("l", [[0, 10]], 10.0, w=1920, h=1080), 1e-6)   # --no-reframe geometry
+    assert fit[0] == pytest.approx(1080 * 607.5 / (1080 * 1920), rel=1e-3)
+
+
+def test_roi_follows_the_lit_moving_performer():
+    rng = np.random.default_rng(0)
+    H, W = 54, 96
+    frames = np.full((8, H, W), 0.08, np.float32) + rng.normal(0, 0.01, (8, H, W)).astype(np.float32)
+    for k in range(8):                                                      # singer right of centre, moving
+        x0 = 66 + (k % 3)
+        frames[k, 10:40, x0:x0 + 8] = 0.9
+    frames[:, 47:, :] += rng.uniform(0, 0.3, (8, 7, W)).astype(np.float32)  # crowd hands along the bottom
+    xf, yf = V._roi_from_frames(frames, 30 / W, 1.0)
+    x = int(round(xf * W))
+    assert x <= 66 and x + 30 >= 76 and yf == 0.0                           # window holds the performer
+
+
+def test_score_prefers_frames_that_fill_the_screen():
+    v = _cam("v", [[0, 10]], 10.0, w=1080, h=1920)
+    l = _cam("l", [[0, 10]], 10.0, w=1920, h=1080)
+    assert V._video_score(v, 0, 5) > V._video_score(l, 0, 5)               # native vertical wins at equal sharpness
+    assert V._video_score(l, 0, 5) > V._video_score(l, 0, 5, max_zoom=1e-6)  # cropped beats letterboxed
+
+
+def test_people_framing_keeps_whole_performers_and_skips_crowd_heads():
+    W, H = 1280, 720
+    singer = (600, 300, 660, 560, 0.95)                    # centre stage
+    guitarist = (1100, 320, 1160, 560, 0.9)               # far right
+    crowd = (300, 640, 420, 720, 0.99)                    # head at the bottom edge
+    x, y = V._roi_from_people([[singer, guitarist, crowd]] * 3, W, H, 405, 720)
+    assert x <= 600 and x + 405 >= 660 and y == 0
+    assert V._roi_from_people([[crowd]], W, H, 405, 720) is None          # crowd alone: fall back to saliency
+    x, y = V._roi_from_people([[(500, 200, 700, 700, 0.9)]], W, H, 400, 400)   # zoom-capped window: head room
+    assert y <= 224 <= y + 400 / 2

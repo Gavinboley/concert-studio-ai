@@ -861,6 +861,34 @@
         <div id="directorCurrentShot" style="font-size:0.75rem; font-family:var(--mono); color:var(--muted);">Click a shot block to inspect camera metadata.</div>
         <button class="btn-secondary" id="btnDownloadEdl" style="font-size:0.74rem;">&#128190; Export CMX 3600 EDL (Premiere / Resolve)</button>
       </div>
+      <div id="cutPanel" style="margin-top:1rem; border-top:1px solid var(--border); padding-top:0.85rem;">
+        <h3 style="font-size:0.9rem; margin-bottom:0.35rem;">Render the real multi-camera video</h3>
+        <p style="font-size:0.74rem; color:var(--muted); margin-bottom:0.6rem;">
+          Every frame comes from the fans' phones: cut on the beat, following whoever the music features. No generative AI.
+        </p>
+        <div style="display:flex; flex-wrap:wrap; gap:0.9rem; align-items:center; font-size:0.8rem;">
+          <label>Format
+            <select id="cutFormat">
+              <option value="vertical">Vertical &middot; TikTok / Shorts</option>
+              <option value="landscape">Landscape &middot; YouTube</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="cutMulti"> Multi-perspective</label>
+          <label><input type="checkbox" id="cutCine"> Cinematic</label>
+          <label>Min cameras <input type="number" id="cutMin" min="1" max="4" value="1" style="width:3.2em;" disabled></label>
+          <label>Max cameras <input type="number" id="cutMax" min="1" max="4" value="4" style="width:3.2em;" disabled></label>
+          <label>Length
+            <select id="cutLen">
+              <option value="">Full song</option>
+              <option value="60">Best 60 s (Shorts)</option>
+              <option value="30">Best 30 s</option>
+            </select>
+          </label>
+          <button class="btn-secondary" id="btnRenderCut" style="font-size:0.78rem;">&#127909; Render MP4</button>
+        </div>
+        <div id="cutStatus" style="font-size:0.75rem; font-family:var(--mono); color:var(--muted); margin-top:0.6rem;"></div>
+        <div id="cutLinks" style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-top:0.4rem; font-size:0.78rem;"></div>
+      </div>
     </section>
   </main>
 
@@ -1813,8 +1841,62 @@
       a.click();
     });
 
+    // Real multi-camera render (concert_studio.v8.cut)
+    let cutJobId = null, cutTimer = null;
+    const cutMulti = document.getElementById("cutMulti");
+    function syncCutInputs() {
+      const on = cutMulti.checked;
+      document.getElementById("cutMin").disabled = !on;
+      document.getElementById("cutMax").disabled = !on;
+      const mn = document.getElementById("cutMin"), mx = document.getElementById("cutMax");
+      mn.value = Math.min(4, Math.max(1, parseInt(mn.value || "1", 10)));
+      mx.value = Math.min(4, Math.max(parseInt(mn.value, 10), parseInt(mx.value || "4", 10)));
+    }
+    ["cutMulti", "cutMin", "cutMax"].forEach(id => document.getElementById(id).addEventListener("change", syncCutInputs));
+    function showCut(st) {
+      const el = document.getElementById("cutStatus");
+      const links = document.getElementById("cutLinks");
+      el.textContent = st.state === "running" ? `Rendering ${Number(st.progress || 0).toFixed(0)}% · ${st.detail || ""}`
+        : st.state === "done" ? "Done." : st.state === "failed" ? (st.detail || "Render failed.") : "";
+      links.replaceChildren();
+      (st.files || []).forEach(url => {
+        const a = document.createElement("a");
+        a.href = url; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = decodeURIComponent(url.split("/").pop());
+        links.appendChild(a);
+      });
+      if (st.state !== "running" && cutTimer) { clearInterval(cutTimer); cutTimer = null; }
+    }
+    async function pollCut() {
+      try { showCut(await (await fetch("/api/video/status")).json()); } catch (_) {}
+    }
+    document.getElementById("btnRenderCut").addEventListener("click", async () => {
+      syncCutInputs();
+      if (!cutJobId) {
+        try { const d = await (await fetch("/api/latest_job")).json(); cutJobId = d && d.job_id; } catch (_) {}
+      }
+      if (!cutJobId) { document.getElementById("cutStatus").textContent = "Remaster a concert first."; return; }
+      const res = await fetch("/api/video/render", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          job_id: cutJobId,
+          format: document.getElementById("cutFormat").value,
+          multi: cutMulti.checked,
+          cinematic: document.getElementById("cutCine").checked,
+          min_cams: parseInt(document.getElementById("cutMin").value, 10),
+          max_cams: parseInt(document.getElementById("cutMax").value, 10),
+          highlight: document.getElementById("cutLen").value || null
+        })
+      });
+      const st = await res.json();
+      if (!res.ok) { document.getElementById("cutStatus").textContent = st.error || "Could not start the render."; return; }
+      showCut(st);
+      if (!cutTimer) cutTimer = setInterval(pollCut, 2000);
+    });
+
     refreshEstimate();
     loadLatestPreRenderedIfAvailable();
+    pollCut();
   </script>
 </body>
 </html>

@@ -22,3 +22,6 @@ scratch/
 models/
 concert_studio/static/audio/
 *.log
+
+# cut renderer intermediates
+.cut_tmp/

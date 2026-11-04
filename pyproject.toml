@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "concert-studio-ai"
-version = "0.8.0"
+version = "0.9.0"
 description = "Turn many phone recordings of one live song into a studio-grade live album and a synced multi-camera video"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # neural stems, crowd removal, de-reverb (RoFormer models via audio-separator; a CUDA GPU is strongly advised)
-ml = ["audio-separator>=0.30", "torch>=2.2"]
+ml = ["audio-separator>=0.30", "torch>=2.2", "torchvision>=0.17", "transformers>=4.50"]
 # perceptual take scoring (Audiobox Aesthetics)
 quality = ["audiobox_aesthetics>=0.0.4", "torchaudio>=2.2"]
 # optional iZotope Ozone 12 mastering chain (Windows; Ozone itself is commercial and not included)

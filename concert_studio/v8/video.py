@@ -9,15 +9,16 @@ videos behind a V8 remaster:
 * director: cuts on the master's downbeats (2 or 4 bars by energy) and on vocal entrances; per shot it picks the
   sharpest, best-exposed, highest-resolution camera that covers the whole shot, never the previous one, avoids
   recent repeats, alternates close/wide (closeness = vocal-band coherence), with a bonus for the phone we hear;
-* render: frame-exact per-shot H.264 segments (1080x1920, 30 fps; landscape clips get a blurred fill), concat,
+* render: frame-exact per-shot H.264 segments (1080x1920, 30 fps; wide clips are auto-cropped to 9:16 around the
+  performers found by a person detector, falling back to stage light/motion, blurred fill only past --max-zoom), concat,
   then one MP4 per master (native / Ozone) with AAC 320k 48 kHz; optional trim (start/end on the master clock)
   renders only the shots inside it, with fades at the trimmed edges;
 * verify_sync: each shot's own clip audio (from the video file, at the computed in-point) is cross-correlated
   with the master -> per-shot offset in ms.
 
 Build the roster once (needs librosa for beats): `python -m concert_studio.v8.video roster --work W --name 3 --job J`.
-Export (numpy + ffmpeg only; the web server calls this): `python -m concert_studio.v8.video export --job J
-[--start S --end E] [--audio native,ozone]`.
+Export (numpy + ffmpeg; torchvision optional for performer framing): `python -m concert_studio.v8.video export
+--job J [--start S --end E] [--audio native,ozone] [--max-zoom 2.7 | --no-reframe]`.
 """
 
 from __future__ import annotations
@@ -68,6 +69,158 @@ def _dims(cam: dict) -> tuple[int, int]:
     """Effective picture size (inside baked-in bars)."""
     c = cam.get("crop")
     return (c[0], c[1]) if c else (cam["w"], cam["h"])
+
+
+MAX_ZOOM = 2.7      # max upscale when auto-cropping wide footage to 9:16 (720p landscape fills the frame at 2.67x)
+
+
+def _reframe_geometry(cam: dict, max_zoom: float = MAX_ZOOM) -> tuple[int, int, float] | None:
+    """Auto-crop window (w, h, upscale) inside the picture for a frame-filling 9:16 shot, or None if the picture is
+    already vertical. Full picture height unless that needs more than `max_zoom` upscale; never wider than the picture."""
+    cw, ch = _dims(cam)
+    if cw / ch <= OUT_W / OUT_H * 1.03:
+        return None
+    s = max(min(OUT_H / ch, max_zoom), OUT_W / cw)
+    w = min(cw, int(round(OUT_W / s)) // 2 * 2)
+    h = min(ch, int(round(OUT_H / s)) // 2 * 2)
+    return w, h, s
+
+
+def _fill_and_scale(cam: dict, max_zoom: float = MAX_ZOOM) -> tuple[float, float]:
+    """(share of the 9:16 frame the picture fills, upscale factor) as rendered."""
+    g = _reframe_geometry(cam, max_zoom)
+    cw, ch = _dims(cam)
+    if g is None:
+        s = OUT_W / cw                                   # vertical: fit width
+        return min(1.0, ch * s / OUT_H), s
+    w, h, s = g
+    return min(1.0, (w * s * h * s) / (OUT_W * OUT_H)), s
+
+
+def _roi_from_frames(frames: np.ndarray, w_frac: float, h_frac: float) -> tuple[float, float]:
+    """Top-left (fractions of the picture) of the crop window that holds the action.
+
+    Saliency = performer motion (frame differences) + stage light (bright areas, squared), mild centre prior."""
+    def norm(a):
+        a = a - a.min()
+        return a / (a.max() + 1e-9)
+    lum = frames.mean(axis=0)
+    mot = np.abs(np.diff(frames, axis=0)).mean(axis=0) if len(frames) > 1 else np.zeros_like(lum)
+    sal = 1.5 * norm(mot) + norm(lum ** 2)
+    stage = sal[: max(1, int(0.8 * sal.shape[0]))]       # bottom rows are the crowd's heads and raised phones
+
+    def place(profile: np.ndarray, frac: float, centre: float) -> float:
+        n = len(profile)
+        win = int(round(frac * n))
+        if win >= n - 1:
+            return 0.0
+        prof = np.convolve(profile, np.ones(5) / 5, mode="same")
+        sums = np.convolve(prof, np.ones(win), mode="valid")
+        mid = np.arange(len(sums)) + win / 2
+        prior = 1.0 - np.abs(mid - centre * n) / n
+        score = sums / (sums.max() + 1e-9) + 0.25 * prior
+        return float(np.argmax(score)) / n
+    return place(stage.mean(axis=0), w_frac, 0.5), place(sal.mean(axis=1), h_frac, 0.42)
+
+
+_DET = None
+
+
+def _person_detector():
+    """COCO person detector (torchvision Faster R-CNN v2), GPU when present; None if torchvision is unavailable."""
+    global _DET
+    if _DET is None:
+        try:
+            import torch
+            from torchvision.models.detection import FasterRCNN_ResNet50_FPN_V2_Weights, fasterrcnn_resnet50_fpn_v2
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+            m = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1).eval().to(dev)
+            _DET = (m, dev, torch)
+        except Exception:                                 # no torchvision / weights: saliency framing only
+            _DET = False
+    return _DET or None
+
+
+def _detect_people(frames: np.ndarray, min_score: float = 0.5) -> list[list[tuple]] | None:
+    """Per frame: (x0, y0, x1, y1, score) of each person in uint8 RGB frames (N, H, W, 3)."""
+    det = _person_detector()
+    if det is None:
+        return None
+    m, dev, torch = det
+    out = []
+    with torch.inference_mode():
+        for f in frames:
+            r = m([torch.from_numpy(np.ascontiguousarray(f)).permute(2, 0, 1).float().div(255.0).to(dev)])[0]
+            keep = (r["labels"] == 1) & (r["scores"] >= min_score)
+            out.append([(*map(float, bx), float(sc)) for bx, sc in zip(r["boxes"][keep].cpu().numpy(),
+                                                                       r["scores"][keep].cpu().numpy())])
+    return out
+
+
+def _roi_from_people(dets: list[list[tuple]], W: int, H: int, win_w: int, win_h: int) -> tuple[int, int] | None:
+    """Crop offset that frames the performers: whole bodies, heads in the top third, centre stage (where the lead
+    vocal usually stands) preferred. None when no performer is visible."""
+    boxes = [b for fr in dets for b in fr
+             if not (b[3] >= 0.97 * H and b[1] >= 0.6 * H)]   # crowd heads poking up from the bottom edge
+    if not boxes:
+        return None
+    b = np.asarray(boxes, float)
+    bw = np.maximum(b[:, 2] - b[:, 0], 1.0)
+    area = bw * (b[:, 3] - b[:, 1]) / (W * H)
+    central = 1.0 - np.abs((b[:, 0] + b[:, 2]) / 2 - W / 2) / (W / 2)
+    wt = b[:, 4] * np.sqrt(area) * (1.0 + 0.6 * central)
+    xs = np.arange(0, W - win_w + 1)
+    ov = np.clip(np.minimum(b[None, :, 2], xs[:, None] + win_w) - np.maximum(b[None, :, 0], xs[:, None]), 0, None) / bw
+    score = (wt * ov ** 2).sum(axis=1)                    # a person cut in half counts a quarter
+    prior = 1.0 - np.abs(xs + win_w / 2 - W / 2) / W
+    x = int(xs[np.argmax(score / (score.max() + 1e-12) + 0.05 * prior)])
+    y = 0
+    if win_h < H:
+        inside = ov[x] > 0.5
+        heads = b[inside, 1] + 0.12 * (b[inside, 3] - b[inside, 1])
+        if len(heads):
+            y = int(np.clip(np.average(heads, weights=wt[inside]) - win_h / 3, 0, H - win_h))
+    return x, y
+
+
+def _decode(video: str, t_in: float, dur: float, vf: str, w: int, h: int, pix: str, n_max: int) -> np.ndarray:
+    fps = max(0.5, min(2.0, n_max / max(dur, 0.5)))
+    r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t_in):.3f}", "-t", f"{max(0.5, dur):.3f}",
+                        "-i", video, "-vf", f"{vf},fps={fps:.3f},format={pix}", "-f", "rawvideo", "-"],
+                       capture_output=True)
+    ch = 3 if pix == "rgb24" else 1
+    n = min(n_max, len(r.stdout) // (w * h * ch))
+    return np.frombuffer(r.stdout[: n * w * h * ch], np.uint8).reshape((n, h, w, ch) if ch == 3 else (n, h, w))
+
+
+def _roi_crop(cam: dict, t_in: float, dur: float, w: int, h: int, detect: bool = True) -> tuple[int, int]:
+    """Crop offset (x, y) inside the picture for one shot: frame the performers (person detector), else the
+    stage action (motion + light)."""
+    cw, ch = _dims(cam)
+    cx, cy = (cam["crop"][2], cam["crop"][3]) if cam.get("crop") else (0, 0)
+    if detect and _person_detector() is not None:
+        dw = min(cw, 1280) // 2 * 2
+        dh = int(round(ch * dw / cw / 2)) * 2
+        fr = _decode(cam["video"], t_in, dur, f"crop={cw}:{ch}:{cx}:{cy},scale={dw}:{dh}", dw, dh, "rgb24", 4)
+        if len(fr):
+            k = dw / cw
+            got = _roi_from_people(_detect_people(fr), dw, dh, int(round(w * k)), int(round(h * k)))
+            if got is not None:
+                return (int(np.clip(round(got[0] / k), 0, cw - w)) // 2 * 2,
+                        int(np.clip(round(got[1] / k), 0, ch - h)) // 2 * 2)
+    W = 96
+    H = max(2, int(round(ch * W / cw / 2)) * 2)
+    r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t_in):.3f}", "-t", f"{max(0.5, dur):.3f}",
+                        "-i", cam["video"], "-vf", f"crop={cw}:{ch}:{cx}:{cy},scale={W}:{H},fps=2,format=gray",
+                        "-f", "rawvideo", "-"], capture_output=True)
+    n = len(r.stdout) // (W * H)
+    if n == 0:
+        return (cw - w) // 2 // 2 * 2, (ch - h) // 2 // 2 * 2
+    frames = np.frombuffer(r.stdout[: n * W * H], np.uint8).reshape(n, H, W).astype(np.float32) / 255.0
+    xf, yf = _roi_from_frames(frames, w / cw, h / ch)
+    x = int(np.clip(round(xf * cw), 0, cw - w)) // 2 * 2
+    y = int(np.clip(round(yf * ch), 0, ch - h)) // 2 * 2
+    return x, y
 
 
 def _keyframe_stats(video: str, w: int, h: int) -> dict:
@@ -252,7 +405,7 @@ def _phys_end(cam: dict, t0: float) -> float:
     return float(t0 + (cam["dur"] - EDGE_OUT - master_to_container(cam, t0)) * (1.0 + cam["drift_ppm"] * 1e-6))
 
 
-def _video_score(cam: dict, t0: float, t1: float) -> float:
+def _video_score(cam: dict, t0: float, t1: float, max_zoom: float = MAX_ZOOM) -> float:
     kf = cam["kf"]
     if not kf["t"]:
         return -1.0
@@ -264,13 +417,13 @@ def _video_score(cam: dict, t0: float, t1: float) -> float:
     sharp = float(np.mean(np.asarray(kf["sharp"])[sel]))
     luma = float(np.mean(np.asarray(kf["luma"])[sel]))
     expo = -abs(luma - 110.0) / 60.0 if (luma < 50 or luma > 200) else 0.0
-    ew, eh = _dims(cam)
-    res = np.log2(max(eh, ew) / 1280.0)
-    land = -0.6 if ew > eh else 0.0
-    return sharp + expo + 0.5 * res + land
+    fill, up = _fill_and_scale(cam, max_zoom)
+    res = np.log2(min(OUT_H, OUT_H / up) / 1280.0)      # detail shown (1280 = 720p vertical); downscaling adds none
+    return sharp + expo + 0.5 * res - 0.8 * (1.0 - fill)
 
 
-def plan_shots(roster: dict, start: float | None = None, end: float | None = None, seed: int = 0) -> list[dict]:
+def plan_shots(roster: dict, start: float | None = None, end: float | None = None, seed: int = 0,
+               max_zoom: float = MAX_ZOOM) -> list[dict]:
     cams, mu = roster["cams"], roster["music"]
     dur = float(mu["duration"])
     start = 0.0 if start is None else max(0.0, float(start))
@@ -338,7 +491,7 @@ def plan_shots(roster: dict, start: float | None = None, end: float | None = Non
                     shots[-1]["end_sec"] = round(min(t + 0.5, end), 3)
                 t += 0.5
                 continue
-            n = last if last in phys else max(phys, key=lambda m: _video_score(cams[m], t, target))
+            n = last if last in phys else max(phys, key=lambda m: _video_score(cams[m], t, target, max_zoom))
             c = cams[n]
             shots.append({"shot_index": len(shots) + 1, "camera": n, "camera_name": c["label"],
                           "start_sec": round(t, 3), "end_sec": round(target, 3),
@@ -351,7 +504,7 @@ def plan_shots(roster: dict, start: float | None = None, end: float | None = Non
         scored = []
         for n in cover:
             c = cams[n]
-            s = _video_score(c, t, target)
+            s = _video_score(c, t, target, max_zoom)
             if n == last:
                 s -= 100.0
             s -= 1.5 * recent[-4:].count(n)
@@ -418,7 +571,8 @@ def _fit_filter(w: int, h: int) -> str:
 
 
 def render(roster: dict, shots: list[dict], out_dir: Path, base: str, audio: dict[str, Path],
-           start: float, end: float, encoder: str = "libx264", progress=None, log=print) -> list[Path]:
+           start: float, end: float, encoder: str = "libx264", progress=None, log=print,
+           reframe: bool = True, max_zoom: float = MAX_ZOOM) -> list[Path]:
     """Render the cut once (video only), then mux each master. Returns the MP4 paths."""
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="mc_", dir=str(out_dir)))
@@ -432,11 +586,19 @@ def render(roster: dict, shots: list[dict], out_dir: Path, base: str, audio: dic
             a = int(round(s["start_sec"] * FPS)) - f0
             b = int(round(s["end_sec"] * FPS)) - f0
             nfr = max(1, b - a)
-            ew, eh = _dims(c)
-            vf = _fit_filter(ew, eh) + f",fps={FPS},format=yuv420p"
-            if c.get("crop"):                             # drop baked-in black bars, then fit like any landscape
-                cw, ch, cx, cy = c["crop"]
-                vf = f"crop={cw}:{ch}:{cx}:{cy}," + vf
+            g = _reframe_geometry(c, max_zoom) if reframe else None
+            ox, oy = (c["crop"][2], c["crop"][3]) if c.get("crop") else (0, 0)
+            if g:                                         # auto-crop wide footage to the action, then fill 9:16
+                w_, h_, _ = g
+                x_, y_ = _roi_crop(c, s["src_in_sec"], s["duration_sec"], w_, h_)
+                s["reframe"] = [w_, h_, ox + x_, oy + y_]
+                vf = f"crop={w_}:{h_}:{ox + x_}:{oy + y_}," + _fit_filter(w_, h_) + f",fps={FPS},format=yuv420p"
+            else:
+                ew, eh = _dims(c)
+                vf = _fit_filter(ew, eh) + f",fps={FPS},format=yuv420p"
+                if c.get("crop"):                         # drop baked-in black bars
+                    cw, ch, cx, cy = c["crop"]
+                    vf = f"crop={cw}:{ch}:{cx}:{cy}," + vf
             if s["src_in_sec"] < 0:                       # clip starts after this instant: hold its first frame
                 vf = f"tpad=start_mode=clone:start_duration={-s['src_in_sec']:.4f}," + vf
             if k == 0 and trimmed_in:
@@ -518,7 +680,8 @@ def verify_sync(roster: dict, shots: list[dict], master: Path, fs: int = 16000, 
 
 
 def export(job_dir: Path, start: float | None = None, end: float | None = None, audio_keys=("native", "ozone"),
-           seed: int = 0, encoder: str = "libx264", verify: bool = True, progress=None, log=print) -> dict:
+           seed: int = 0, encoder: str = "libx264", verify: bool = True, progress=None, log=print,
+           reframe: bool = True, max_zoom: float = MAX_ZOOM) -> dict:
     rf = job_dir / "director_roster.json"
     roster = json.loads(rf.read_text())
     if any("crop" not in c for c in roster["cams"].values()):
@@ -531,12 +694,12 @@ def export(job_dir: Path, start: float | None = None, end: float | None = None, 
     dur = float(roster["music"]["duration"])
     s0 = 0.0 if start is None else max(0.0, float(start))
     s1 = dur if end is None else min(dur, float(end))
-    shots = plan_shots(roster, s0, s1, seed)
+    shots = plan_shots(roster, s0, s1, seed, max_zoom if reframe else 1e-6)
     files = {"native": job_dir / "studio_hd_master.wav", "ozone": job_dir / "studio_hd_ozone_master.wav"}
     audio = {k: files[k] for k in audio_keys if files[k].exists()}
     trim_tag = "" if (s0 <= 0.05 and s1 >= dur - 0.05) else f"_{int(s0 // 60)}m{s0 % 60:04.1f}-{int(s1 // 60)}m{s1 % 60:04.1f}"
     base = f"multicam{trim_tag}".replace(".", "s")
-    outs = render(roster, shots, job_dir, base, audio, s0, s1, encoder, progress, log)
+    outs = render(roster, shots, job_dir, base, audio, s0, s1, encoder, progress, log, reframe, max_zoom)
     (job_dir / f"{base}.edl").write_text(export_edl(shots, roster))
     sync = verify_sync(roster, shots, files["native"]) if verify else []
     good = [r for r in sync if r["score"] >= 8]
@@ -559,17 +722,22 @@ def main(argv=None) -> None:
     ap.add_argument("--audio", default="native,ozone")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--encoder", default="libx264")
+    ap.add_argument("--max-zoom", type=float, default=MAX_ZOOM,
+                    help="max upscale when auto-cropping wide footage to fill the 9:16 frame")
+    ap.add_argument("--no-reframe", action="store_true", help="fit wide footage over a blurred fill instead")
     a = ap.parse_args(argv)
+    mz = a.max_zoom if not a.no_reframe else 1e-6
     if a.cmd == "roster":
         build_roster(a.work, a.name, a.job, a.dl_manifest)
     elif a.cmd == "plan":
-        shots = plan_shots(json.loads((a.job / "director_roster.json").read_text()), a.start, a.end, a.seed)
+        shots = plan_shots(json.loads((a.job / "director_roster.json").read_text()), a.start, a.end, a.seed, mz)
         for s in shots:
             print(f"{s['shot_index']:3d} {s['start_sec']:7.2f}-{s['end_sec']:7.2f} {s['duration_sec']:5.2f}s "
                   f"{s['camera_name'][:24]:24s} {s['shot_type']:5s} {s['switch_reason']}")
     else:
         rep = export(a.job, a.start, a.end, tuple(a.audio.split(",")), a.seed, a.encoder,
-                     progress=lambda p, d: print(f"  {p:5.1f}% {d}", flush=True))
+                     progress=lambda p, d: print(f"  {p:5.1f}% {d}", flush=True),
+                     reframe=not a.no_reframe, max_zoom=a.max_zoom)
         print(json.dumps({k: rep[k] for k in ("files", "edl", "sync_median_abs_ms", "sync_max_abs_ms")}))
 
 

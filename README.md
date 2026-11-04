@@ -5,6 +5,18 @@
 </p>
 
 <p align="center">
+  <!-- YOUTUBE: replace VIDEO_ID below once the example is uploaded -->
+  <a href="https://www.youtube.com/watch?v=VIDEO_ID"><img src="assets/hero.jpg" alt="Watch: My Chemical Romance, Early Sunsets Over Monroeville, rebuilt from 57 fans' phones" width="100%"></a>
+  <br><sub>&#9654; <b>Watch the example:</b> My Chemical Romance, "Early Sunsets Over Monroeville" (live), rebuilt from 57 phones in the crowd.</sub>
+</p>
+
+> **No generative AI. Nothing is invented.** Every note is the band's own performance as the crowd's phones
+> recorded it, and every frame was filmed by a fan. Neural networks here only *listen and look*: they separate the
+> band into stems, judge which phone sounds best at each moment, and recognise who is on stage. They never
+> create sound or pictures: no AI upscaling, frame interpolation, inpainting, voice models or music generation.
+> The mix uses the classic studio tools an engineer would (EQ, compression, reverb).
+
+<p align="center">
   <a href="#how-it-works">How it works</a> ·
   <a href="#measured-results">Measured results</a> ·
   <a href="#install">Install</a> ·
@@ -19,8 +31,9 @@ After a show, dozens of people post the same song from different spots in the cr
 its own way: a fan screaming next to the phone, auto-gain pumping, a clipped mic, a 32 kbps re-encode, a
 pocket, a balcony echo. ConcertStudio AI lines all of them up to the millisecond, picks the best-sounding phone
 for every moment, separates the band into stems with neural networks, and mixes them into one consistent,
-radio-ready master. It then cuts the phones' video on the music's downbeats into one multi-camera edit, with
-lip sync checked shot by shot.
+radio-ready master. It then directs the phones' video like a live-concert editor: cuts on the downbeat, the singer on
+the vocal lines and the guitarist in the solo, up to four angles at once in the big moments, for YouTube or
+TikTok/Shorts. Lip sync is checked shot by shot.
 
 It is built for the real thing: one song, 2 to 60 phones, partial and overlapping clips, duplicates and
 re-uploads, and works with as few as one clip.
@@ -32,7 +45,7 @@ re-uploads, and works with as few as one clip.
 | Live-album master | 24-bit WAV at 44.1 and 48 kHz, -14 LUFS, -1 dBTP; optional iZotope Ozone 12 master |
 | Stems | vocals, guitar, bass, drums, keys, other, crowd (24-bit) |
 | Curated clip list | duplicates and re-uploads merged, trash (other songs, talking, unusable audio) listed with reasons, cleaned WAVs |
-| Multi-camera video | 1080x1920 H.264 MP4 cut between the real phones on downbeats and vocal entrances, muxed with each master; trim to any range; CMX 3600 EDL with real source timecode for Premiere/Resolve |
+| Multi-camera video | Vertical 1080x1920 (TikTok / YouTube Shorts, captions kept clear of the apps' buttons) or landscape 2560x1440 (YouTube). One camera at a time or 1-4 perspectives on screen, standard or cinematic. Cuts on downbeats and vocal entrances, shows whichever band member the music features, credits each filmer. Full song, any range, or the best 30/60 s for a Short |
 | Reports | per-stage JSON: take path, lag tracks, mix moves, per-shot sync offsets |
 
 ## How it works
@@ -71,11 +84,33 @@ carved under the voice, two real phone positions form the stereo image, and synt
 gentle glue compressor make it sound like a record rather than a phone. A true-peak limiter finishes at -14 LUFS.
 An optional configured Ozone 12 chain (Windows) is included.
 
-**7. Multi-camera director.** Beats, downbeats and vocal entrances come from the master and the vocal stem.
+**7. Multi-camera director** (`concert_studio/v8/cut.py`, `vision.py`). It knows two things about every moment.
+*What the music is doing*: beats, downbeats, vocal entrances and loudness come from the master. The stems show who is
+featured: singing, a guitar part, a fill. *What each phone sees*: every phone is sampled every 1.5 s. A person
+detector (torchvision Faster R-CNN) finds the performers. CLIP (zero-shot) names what each one plays and drops
+fans' heads. A static-pixel test finds captions burned into the upload. Colour, exposure and sharpness are
+measured too. The director then plans phrases of 2-4 bars:
+- **Hero panel.** It shows the featured member, framed tight. Other panels show the stage, the other players or
+  a second angle.
+- **Pacing.** Quiet passages hold fewer, longer shots. Choruses open up to more panels and faster swaps, and a
+  jump in energy can "slam" to one full frame.
+- **Rules.** It never puts the same phone on screen twice, and a single-camera cut never stays on one phone.
+- **Picture.** Every phone's colour is pulled toward what the other phones saw at the same moment (a visual
+  consensus, like the audio loudness lock). Footage is stabilised (vid.stab) and denoised lightly, then scaled
+  with Lanczos and contrast-adaptive sharpening.
+- **Cinematic mode.** It adds slow push-ins, a filmic grade with highlight bloom, grain and vignette, and
+  dissolves between quiet sections.
+
+The older single-camera exporter (`concert_studio/v8/video.py`) uses the same timing below.
+Beats, downbeats and vocal entrances come from the master and the vocal stem.
 Each phone's video is mapped onto the master clock with its measured offset, drift and the audio/video offset of
 its file. Shots cut on downbeats, preferring vocal entrances, only use footage whose audio was validated in step 2,
-favour sharp, well-exposed, close angles, never repeat the previous camera and alternate close and wide. Each
-shot is rendered frame-exact, then the clip's own audio is cross-correlated against the master to verify sync.
+favour sharp, well-exposed, close angles, never repeat the previous camera and alternate close and wide. Wide
+footage (landscape, square, letterboxed) is auto-cropped to fill the vertical frame: a person detector
+(torchvision Faster R-CNN) frames the performers whole, with heads in the top third and centre stage (where the
+lead vocal usually stands) preferred, and crowd heads at the bottom edge ignored. Without torchvision it falls
+back to stage light and motion. Each shot is rendered frame-exact, then the clip's own audio is
+cross-correlated against the master to verify sync.
 
 ## Measured results
 
@@ -89,9 +124,12 @@ Audiobox Aesthetics PQ (higher is better; it agrees with listening tests on this
 | V8, 56 phones + pumping control | 6.69 | 6.81 | fast wobble of the comp 1.08 -> 0.74 dB |
 | V8 + tonal stabilizer (current) | 6.73 | 6.84 | tone wander across the song 3.4 -> 2.6 dB; no 10 s window worse by 0.3 |
 
-Multi-camera cut of the same song: 57 phones (16 letterboxed uploads detected and passed over), 78 shots over
-the full 370 s with no gaps; measured sync of every shot against the master: median 0.8 ms, max 21 ms (one video
-frame is 33 ms).
+The headline cut (landscape, multi-perspective, cinematic, 6:10 at 2560x1440) puts 34 of the 57 phones on
+screen across 139 panel shots. The layout moves between one, two, three and four perspectives with the music
+(61 / 116 / 131 / 62 s). Burned-in TikTok captions are framed out of all but 5 shots. Lip sync was measured on
+114 panels against the master: median 0.4 ms, 105 within half a frame (16 ms), worst 55 ms.
+Stabilisation cuts handheld jitter by 15% (standard) and 24% (cinematic), measured on six real shots (2.52 to
+2.14 / 1.91 px per frame).
 
 **Benchmark (simulated phones, 75 s excerpts, real crowd audio; see [Benchmark](#benchmark)).** Baseline is
 the best raw phone *for each metric*, a deliberately hard comparison:
@@ -140,12 +178,17 @@ The pipeline does not assume a big payload or a particular style:
 - **Unusual productions.** Stem tone targets are generic. If you have the studio recording,
   `--set tone_ref=studio.wav` gently matches the master's long-term tonal balance to it.
 - **Letterboxed uploads** (landscape video posted inside a vertical frame) are detected; the director crops the
-  black bars, fills the frame like any landscape clip, and scores the clip by its real resolution.
+  black bars, reframes the picture like any landscape clip, and scores the clip by its real resolution.
+- **Landscape and square phones** are cropped to 9:16 around the performers (up to 2.7x zoom, `--max-zoom`);
+  the director weighs the frame filled and the detail left after the zoom, so sharp vertical phones still win
+  when they cover the moment. `--no-reframe` fits wide footage over a blurred fill instead.
 
 Quality still grows with the number of phones: more phones means more choice at every moment and a better
 consensus for the loudness lock. See the [benchmark](#benchmark).
 
 ## Install
+
+> **Hosted version: coming soon.** For now ConcertStudio runs on your own machine; an NVIDIA GPU is recommended.
 
 Requirements: Python 3.10+, FFmpeg on `PATH`, and a CUDA GPU for the neural stages (CPU works, slowly).
 Plan on at least 16 GB of RAM for a 6-minute song with 50+ phones.
@@ -183,12 +226,21 @@ overridden with `--set name=value` (see `MixParams` in `concert_studio/v8/master
 
 ```bash
 J=workspace_ui/<job>                                             # the folder printed by `publish`
-python -m concert_studio.v8.video roster --work $W --name 1 --job $J
-python -m concert_studio.v8.video export --job $J --audio native,ozone          # whole song
-python -m concert_studio.v8.video export --job $J --start 30 --end 75           # trimmed cut
+python -m concert_studio.v8.video roster --work $W --name 1 --job $J            # once: where every phone sits
+python -m concert_studio.v8.cut --job $J --format landscape --multi --cinematic \
+    --title "Artist - Song" --subtitle "Live, filmed by the crowd"               # YouTube, 1-4 perspectives
+python -m concert_studio.v8.cut --job $J --format vertical --multi --highlight 60   # a 60 s Short / TikTok
+python -m concert_studio.v8.cut --job $J --format vertical --start 30 --end 75      # one camera at a time
 ```
 
-`--seed N` gives a different but equally valid cut; `--encoder h264_nvenc` uses the GPU encoder.
+`--min-cams` / `--max-cams` (1-4) bound how many perspectives share the screen. Performer framing needs `torch`,
+`torchvision` and `transformers` (the `ml` extra); without them the director frames by stage light and motion.
+The first run analyses every phone once (about 15 minutes for 57 phones on one GPU) and caches it in
+`director_vision.json`. The web UI has the same controls: format, **Multi-perspective**, **Cinematic**, min and
+max cameras, and length.
+
+`--seed N` gives a different but equally valid cut; `--encoder h264_nvenc` uses the GPU encoder;
+`--max-zoom 2.0` limits the auto-crop upscale, `--no-reframe` turns it off.
 
 **Curating a messy download** (duplicates, other songs, talking): after `align`, `crowd`, `quality.py` and a
 plan-only comp (`comp --name P --set plan_only=1`), `run curate --work $W --out <dir> --name P` writes
@@ -225,8 +277,8 @@ bash bench/run_bench.sh                       # full pipeline on every case in $
 
 | Path | What it is |
 |---|---|
-| `concert_studio/v8/` | the current engine: `align`, `comp`, `mix`, `master`, `video`, `curate`, `quality`, `simulate`, `run` |
-| `concert_studio/web.py`, `static/` | local web UI to browse jobs and A/B masters (`python -m concert_studio.cli serve`); its multi-cam panel is a legacy preview, render real cuts with `concert_studio.v8.video` |
+| `concert_studio/v8/` | the current engine: `align`, `comp`, `mix`, `master`, `curate`, `quality`, `simulate`, `run`; video: `cut` (director + renderer, every mode), `vision` (what each phone sees), `video` (roster, timing, sync checks, legacy single-camera export) |
+| `concert_studio/web.py`, `static/` | local web UI to browse jobs, A/B masters and render the multi-camera video (`python -m concert_studio.cli serve`; set `CS_CUT_PYTHON` to the interpreter with torch). Built for one person on their own machine, not for the open internet |
 | `concert_studio/*.py` (top level) | the earlier V1-V7 engine, kept for reference; superseded by `v8` |
 | `tests/` | unit tests (`pytest -q`) |
 | `bench/` | benchmark runner and scorer |

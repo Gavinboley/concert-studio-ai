@@ -5,8 +5,14 @@ from __future__ import annotations
 import email.parser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
 import tempfile
+import threading
 from typing import Any
 import urllib.parse
 import uuid
@@ -410,6 +416,88 @@ class ConcertStudioWebApp:
             "report": report_dict,
         }
 
+    # ------------------------------------------------------------------ V8 multi-camera render (local tool)
+    _CUT_FILE = re.compile(r"^cut_[a-z0-9_.-]+\.mp4$")
+    _cut_lock = threading.Lock()
+    _cut: dict[str, Any] = {"state": "idle"}
+
+    def _job_dir(self, job_id: str) -> Path | None:
+        job = Path(str(job_id)).name
+        root = self.workspace_dir.resolve()
+        jd = (root / job).resolve()
+        if not job or job in (".", "..") or not jd.is_relative_to(root) or not jd.is_dir():
+            return None
+        return jd
+
+    def start_cut(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Render a V8 cut in a child process (python -m concert_studio.v8.cut). One render at a time.
+        CS_CUT_PYTHON picks the interpreter (needs torch/transformers for performer framing), CS_CUT_WRAP an optional
+        wrapper such as a memory-capped scope."""
+        jd = self._job_dir(body.get("job_id", ""))
+        if jd is None or not (jd / "director_roster.json").is_file():
+            raise ValueError("This job has no video roster yet: run `python -m concert_studio.v8.video roster`.")
+        fmt = "landscape" if body.get("format") == "landscape" else "vertical"
+        mn = int(np.clip(int(body.get("min_cams", 1) or 1), 1, 4))
+        mx = int(np.clip(int(body.get("max_cams", 4) or 4), mn, 4))
+        hl = body.get("highlight")
+        hl = int(np.clip(int(hl), 15, 180)) if hl not in (None, "", 0, "0") else None
+        cmd = [*shlex.split(os.environ.get("CS_CUT_WRAP", "")), os.environ.get("CS_CUT_PYTHON", sys.executable),
+               "-m", "concert_studio.v8.cut", "--job", str(jd), "--format", fmt,
+               "--min-cams", str(mn), "--max-cams", str(mx), "--audio", "native,ozone"]
+        if body.get("multi"):
+            cmd.append("--multi")
+        if body.get("cinematic"):
+            cmd.append("--cinematic")
+        if hl:
+            cmd += ["--highlight", str(hl)]
+        with self._cut_lock:
+            if self._cut.get("state") == "running":
+                raise RuntimeError("A render is already running.")
+            self._cut = {"state": "running", "job_id": jd.name, "progress": 0.0, "detail": "starting", "files": []}
+        threading.Thread(target=self._run_cut, args=(cmd, jd.name), daemon=True).start()
+        return self.get_cut_status()
+
+    def _run_cut(self, cmd: list[str], job: str) -> None:
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        files: list[str] = []
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+                                    cwd=str(Path(__file__).resolve().parents[1]))
+            tail: list[str] = []
+            for line in proc.stdout:  # type: ignore[union-attr]
+                tail = (tail + [line.rstrip()])[-20:]
+                m = re.match(r"^\s*([\d.]+)% (.*)$", line)
+                if m:
+                    with self._cut_lock:
+                        self._cut.update(progress=float(m.group(1)), detail=m.group(2)[:80])
+                elif line.startswith("{"):
+                    try:
+                        files = [f for f in json.loads(line).get("files", []) if self._CUT_FILE.match(f)]
+                    except ValueError:
+                        pass
+            rc = proc.wait()
+            if rc != 0:
+                print("\n".join(tail), file=sys.stderr)
+            with self._cut_lock:
+                self._cut.update(state="done" if rc == 0 else "failed", progress=100.0 if rc == 0 else
+                                 self._cut.get("progress", 0.0), detail="done" if rc == 0 else "render failed (see server log)",
+                                 files=[f"/api/video/{job}/{f}" for f in files])
+        except Exception as exc:  # noqa: BLE001
+            print(f"cut render error: {exc}", file=sys.stderr)
+            with self._cut_lock:
+                self._cut.update(state="failed", detail="render failed (see server log)")
+
+    def get_cut_status(self) -> dict[str, Any]:
+        with self._cut_lock:
+            return dict(self._cut)
+
+    def get_video_path(self, job_id: str, filename: str) -> Path | None:
+        jd = self._job_dir(job_id)
+        name = Path(urllib.parse.unquote(filename)).name
+        if jd is None or not self._CUT_FILE.match(name) or not (jd / name).is_file():
+            return None
+        return jd / name
+
     def get_audio_file(self, job_id: str, filename: str) -> bytes | None:
         safe_job = Path(job_id).name
         safe_file = Path(filename).name
@@ -456,6 +544,41 @@ def create_http_server(
         def log_message(self, format: str, *args: Any) -> None:
             return
 
+        def _send_path(self, path: Path, ctype: str) -> None:
+            """Stream a file from disk with single-range support."""
+            total = path.stat().st_size
+            start, end, code = 0, total - 1, 200
+            rng = self.headers.get("Range", "")
+            m = re.match(r"^bytes=(\d*)-(\d*)$", rng)
+            if m and total:
+                a, b = m.group(1), m.group(2)
+                if a:
+                    start = min(int(a), total - 1)
+                    end = min(int(b), total - 1) if b else total - 1
+                elif b:
+                    start = max(0, total - int(b))
+                end = max(start, end)
+                code = 206
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            if code == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.end_headers()
+            try:
+                with path.open("rb") as fh:
+                    fh.seek(start)
+                    left = end - start + 1
+                    while left > 0:
+                        chunk = fh.read(min(1 << 20, left))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+
         def _send_json(self, status: int, data: dict[str, Any]) -> None:
             raw = json.dumps(data).encode("utf-8")
             self.send_response(status)
@@ -489,6 +612,17 @@ def create_http_server(
                 cid = q.get("concert_id", ["current_concert"])[0] if q else "current_concert"
                 self._send_json(200, app.get_crowdsource_library(cid))
                 return
+
+            if self.path == "/api/video/status":
+                self._send_json(200, app.get_cut_status())
+                return
+
+            if self.path.startswith("/api/video/"):
+                parts = self.path.strip("/").split("/")
+                path = app.get_video_path(parts[2], parts[3]) if len(parts) == 4 else None
+                if path is not None:
+                    self._send_path(path, "video/mp4")
+                    return
 
             if self.path.startswith("/api/audio/"):
                 parts = self.path.strip("/").split("/")
@@ -565,6 +699,16 @@ def create_http_server(
                 if self.path == "/api/setlist":
                     payload = json.loads(body.decode("utf-8"))
                     self._send_json(200, app.align_setlist(payload))
+                    return
+                if self.path == "/api/video/render":
+                    if len(body) > 4096:
+                        self._send_json(413, {"error": "Request too large"})
+                        return
+                    payload = json.loads(body.decode("utf-8"))
+                    try:
+                        self._send_json(200, app.start_cut(payload if isinstance(payload, dict) else {}))
+                    except (ValueError, RuntimeError) as exc:
+                        self._send_json(409, {"error": str(exc)})
                     return
                 if self.path == "/api/director/plan":
                     payload = json.loads(body.decode("utf-8"))
