@@ -6,7 +6,7 @@
 
 <p align="center">
   <!-- YOUTUBE: replace VIDEO_ID below once the example is uploaded -->
-  <a href="https://www.youtube.com/watch?v=VIDEO_ID"><img src="assets/hero.jpg" alt="Watch: My Chemical Romance, Early Sunsets Over Monroeville, rebuilt from 57 fans' phones" width="100%"></a>
+  <a href="https://youtu.be/Yp3ncUXyvQ0"><img src="assets/hero.jpg" alt="Watch: My Chemical Romance, Early Sunsets Over Monroeville, rebuilt from 57 fans' phones" width="100%"></a>
   <br><sub>&#9654; <b>Watch the example:</b> My Chemical Romance, "Early Sunsets Over Monroeville" (live), rebuilt from 57 phones in the crowd.</sub>
 </p>
 
